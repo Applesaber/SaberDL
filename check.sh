@@ -20,10 +20,10 @@ run_case() {
     local desc=$1 expect=$2; shift 2
     echo
     echo "${BLUE}━━━ $desc ━━━${NC}"
-    echo "  期望: $expect | 命令: cargo run --quiet -- $*"
+    echo "  期望: $expect | 命令: cargo run --quiet -- get $*"
     echo
     set +e
-    cargo run --quiet -- "$@"
+    cargo run --quiet -- get "$@"
     local rc=$?
     set -e
     if [[ "$expect" == "ok"  && $rc -eq 0 ]] \

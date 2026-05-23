@@ -1,7 +1,7 @@
 use std::path::Path;
 use async_trait::async_trait;
 use serde::Deserialize;
-
+use crate::auth::Cookies;
 use crate::error::DownloadError;
 use crate::downloader::Downloader;  // 使用 mod.rs 中定义的 trait
 
@@ -52,26 +52,31 @@ pub struct BilibiliDownloader {
 }
 
 impl Default for BilibiliDownloader {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self { Self::new(None) }
 }
 
 impl BilibiliDownloader {
-    pub fn new() -> Self {
+    pub fn new(cookies: Option<Cookies>) -> Self {
         let mut builder = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
                          (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-        if let Ok(sessdata) = std::env::var("BILIBILI_SESSDATA") {
+        if let Some(c) = cookies {
             let jar = std::sync::Arc::new(reqwest::cookie::Jar::default());
-            let cookie = format!("SESSDATA={}; Domain=.bilibili.com", sessdata);
             let url: reqwest::Url = "https://www.bilibili.com".parse().unwrap();
-            jar.add_cookie_str(&cookie, &url);
+            for (k, v) in [("SESSDATA", c.sessdata.as_str()),
+                ("bili_jct", c.bili_jct.as_str()),
+                ("DedeUserID", c.dedeuserid.as_str())]
+            {
+                jar.add_cookie_str(
+                    &format!("{}={}; Domain=.bilibili.com", k, v),
+                    &url,
+                );
+            }
             builder = builder.cookie_provider(jar);
         }
 
-        let client = builder.build()
-            .expect("BilibiliDownloader: client build should not fail");
-        Self { client }
+        Self { client: builder.build().expect("BilibiliDownloader: client build should not fail") }
     }
 
     // 内部辅助方法
