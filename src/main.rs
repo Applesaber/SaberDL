@@ -1,9 +1,10 @@
 use std::io;
+use anyhow::{Context, Result};
 use clap::Parser;
 use thiserror::Error;
 use indicatif::{ProgressBar, ProgressStyle};
-
-use anyhow::{Context, Result};
+use futures_util::TryStreamExt;
+use tokio_util::io::StreamReader;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -35,8 +36,8 @@ impl From<io::Error> for DownloadError {
     }
 }
 
-fn download(url: &str, output_path: &str) -> Result<u64, DownloadError> {
-    let mut response = reqwest::blocking::get(url)?;
+async fn download(url: &str, output_path: &str) -> Result<u64, DownloadError> {
+    let response = reqwest::get(url).await?;
 
     if !response.status().is_success() {
         return Err(DownloadError::BadStatus(response.status().as_u16()));
@@ -61,16 +62,21 @@ fn download(url: &str, output_path: &str) -> Result<u64, DownloadError> {
         }
     };
 
-    let file = std::fs::File::create(output_path)?;
+    let file = tokio::fs::File::create(output_path).await?;
 
-    let mut writer = pb.wrap_write(file);
-    let bytes_copied = io::copy(&mut response, &mut writer)?;
+    let stream = response
+        .bytes_stream()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let mut reader = StreamReader::new(stream);
+    let mut writer = pb.wrap_async_write(file);
+    let bytes_copied = tokio::io::copy(&mut reader, &mut writer).await?;
+
     pb.finish_and_clear();
-
     Ok(bytes_copied)
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let output_path = args.output.unwrap_or_else(|| {
@@ -81,9 +87,10 @@ fn main() -> anyhow::Result<()> {
             .to_string()
     });
 
-    println!("[GET] {url}", url=args.url);
+    println!("[GET] {}", args.url);
 
     let bytes_copied = download(&args.url, &output_path)
+        .await
         .with_context(|| format!("下载失败：{}", args.url))?;
 
     println!("[OK] 已保存到 {output_path}（{bytes_copied} 字节）");

@@ -4,12 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# HTTP 客户端。blocking = 同步阻塞 API；rustls-tls = 用纯 Rust 的 TLS
-# 实现，避免依赖系统 OpenSSL（在 Windows / 各种 Linux 上更省心喵）
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
-indicatif = "0.18"
-
-# 应用层错误处理：自带 ? 传播 + .context() 添加错误链
+indicatif = { version = "0.18", features = ["tokio"] }
 anyhow = "1"
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
