@@ -104,14 +104,14 @@ fn build_client() -> Result<reqwest::Client, DownloadError> {
 
 fn worker_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{prefix:>6.cyan} {wide_bar:.cyan/blue} {percent:>3}% {bytes:>10}/{total_bytes:>10}"
-    ).unwrap().progress_chars("#>-")
+        "{prefix:>6.cyan} {wide_bar:.cyan/blue} {percent:>3}% [{elapsed_precise}] {bytes:>10}/{total_bytes:>10}"
+    ).unwrap()
 }
 
 fn total_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{prefix:>6.green.bold} {wide_bar:.green} {percent:>3}% {bytes}/{total_bytes} ({bytes_per_sec}, ETA {eta})"
-    ).unwrap().progress_chars("#>-")
+        "{prefix:>6.green.bold} {wide_bar:.green} {percent:>3}% [{elapsed_precise}] {bytes}/{total_bytes} ({bytes_per_sec}, ETA {eta})"
+    ).unwrap()
 }
 
 fn state_path(output_path: &Path) -> PathBuf {
