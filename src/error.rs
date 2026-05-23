@@ -14,6 +14,13 @@ pub enum DownloadError {
     NoContentLength,
     #[error("download interrupted by user")]
     Interrupted,
+    
+    #[error("Bilibili API error: {0} (code={1})")]
+    BiliApi(String, i64),
+    #[error("URL parse failed: {0}")]
+    UrlParse(String),
+    #[error("{0}")]
+    Other(String),
 }
 
 impl From<reqwest::Error> for DownloadError {
