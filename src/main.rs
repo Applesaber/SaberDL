@@ -96,6 +96,7 @@ fn plan_chunks(total: u64, jobs: usize) -> Vec<Chunk> {
 
 fn build_client() -> Result<reqwest::Client, DownloadError> {
     reqwest::Client::builder()
+        .user_agent(concat!("SaberDL/", env!("CARGO_PKG_VERSION")))
         .pool_max_idle_per_host(32)
         .build()
         .map_err(DownloadError::Http)
@@ -196,7 +197,7 @@ async fn load_or_create_state(
     }
 
     let chunks_plan = plan_chunks(probe.total, jobs);
-    Ok(DownloadState {
+    let state = DownloadState {
         version: 1,
         url: probe.final_url.clone(),
         total: probe.total,
@@ -206,7 +207,10 @@ async fn load_or_create_state(
             index: c.index, start: c.start, end: c.end,
             status: ChunkStatus::NotStarted,
         }).collect(),
-    })
+    };
+    // 立即落盘:即便没 chunk 完成就被中断,重启也能识别已规划的分块
+    save_state_atomic(&state, state_path).await?;
+    Ok(state)
 }
 
 /// 原子写:write tmp → sync_all → rename,保证 state 永远不会半截
