@@ -12,3 +12,4 @@ indicatif = { version = "0.18", features = ["tokio"] }
 anyhow = "1"
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
+bytes = "1"
