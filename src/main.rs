@@ -3,9 +3,12 @@ use std::io;
 use anyhow::{Context, Result};
 use clap::Parser;
 use thiserror::Error;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use tokio_util::io::StreamReader;
-use tokio::io::AsyncSeekExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+
+const MIN_PARALLEL_SIZE: u64 = 1024 * 1024;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -36,7 +39,6 @@ impl From<io::Error> for DownloadError {
     fn from(err: io::Error) -> Self { DownloadError::Io(err) }
 }
 
-#[allow(dead_code)] // index: M2 加进度条时用作 worker 标识
 struct Chunk { index: usize, start: u64, end: u64 }
 
 fn plan_chunks(total: u64, jobs: usize) -> Vec<Chunk> {
@@ -59,6 +61,18 @@ fn build_client() -> Result<reqwest::Client, DownloadError> {
         .pool_max_idle_per_host(32)
         .build()
         .map_err(DownloadError::Http)
+}
+
+fn worker_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{prefix:>6.cyan} {wide_bar:.cyan/blue} {percent:>3}% {bytes:>10}/{total_bytes:>10}"
+    ).unwrap().progress_chars("#>-")
+}
+
+fn total_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{prefix:>6.green.bold} {wide_bar:.green} {percent:>3}% {bytes}/{total_bytes} ({bytes_per_sec}, ETA {eta})"
+    ).unwrap().progress_chars("#>-")
 }
 
 /// 用 `Range: bytes=0-0` GET 探测,比 HEAD 更可靠(CDN/重定向场景下 HEAD 经常返回错误的 Content-Length)
@@ -106,6 +120,8 @@ async fn download_chunk(
     url: String,
     output_path: String,
     chunk: Chunk,
+    pb: ProgressBar,
+    total_pb: ProgressBar,
 ) -> Result<u64, DownloadError> {
     let range = format!("bytes={}-{}", chunk.start, chunk.end);
     let resp = client.get(&url)
@@ -118,18 +134,26 @@ async fn download_chunk(
         return Err(DownloadError::BadStatus(resp.status().as_u16()));
     }
 
-    let stream = resp.bytes_stream()
-        .map_err(io::Error::other);
-    let mut reader = StreamReader::new(stream);
-
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .open(&output_path)
         .await?;
     file.seek(io::SeekFrom::Start(chunk.start)).await?;
 
-    let bytes = tokio::io::copy(&mut reader, &mut file).await?;
-    Ok(bytes)
+    // 手动 chunk loop:每读一段同时推 worker pb 和共享 total_pb
+    let mut stream = resp.bytes_stream();
+    let mut bytes_written = 0u64;
+    while let Some(item) = stream.next().await {
+        let buf = item?;
+        file.write_all(&buf).await?;
+        let n = buf.len() as u64;
+        bytes_written += n;
+        pb.inc(n);
+        total_pb.inc(n);
+    }
+
+    pb.finish_and_clear();
+    Ok(bytes_written)
 }
 
 async fn download_parallel(
@@ -138,6 +162,7 @@ async fn download_parallel(
     output_path: &str,
     total: u64,
     jobs: usize,
+    multi: &MultiProgress,
 ) -> Result<u64, DownloadError> {
     let chunks = plan_chunks(total, jobs);
 
@@ -145,13 +170,23 @@ async fn download_parallel(
     file.set_len(total).await?;
     drop(file);
 
+    let total_pb = multi.add(ProgressBar::new(total));
+    total_pb.set_style(total_style());
+    total_pb.set_prefix("TOTAL");
+
     let mut set = tokio::task::JoinSet::new();
     for chunk in chunks {
+        let chunk_size = chunk.end - chunk.start + 1;
+        let pb = multi.add(ProgressBar::new(chunk_size));
+        pb.set_style(worker_style());
+        pb.set_prefix(format!("W{}", chunk.index));
+
         let client = client.clone();
         let url = url.to_string();
         let output_path = output_path.to_string();
+        let total_pb_w = total_pb.clone();
         set.spawn(async move {
-            download_chunk(client, url, output_path, chunk).await
+            download_chunk(client, url, output_path, chunk, pb, total_pb_w).await
         });
     }
 
@@ -162,7 +197,34 @@ async fn download_parallel(
             .map_err(|e| DownloadError::Io(io::Error::other(e.to_string())))??;
         total_bytes += chunk_bytes;
     }
+
+    total_pb.finish_with_message("done");
     Ok(total_bytes)
+}
+
+async fn download_single(
+    client: reqwest::Client,
+    url: &str,
+    output_path: &str,
+    total: u64,
+    multi: &MultiProgress,
+) -> Result<u64, DownloadError> {
+    let resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        return Err(DownloadError::BadStatus(resp.status().as_u16()));
+    }
+
+    let pb = multi.add(ProgressBar::new(total));
+    pb.set_style(total_style());
+    pb.set_prefix("SINGLE");
+
+    let file = tokio::fs::File::create(output_path).await?;
+    let stream = resp.bytes_stream().map_err(io::Error::other);
+    let mut reader = StreamReader::new(stream);
+    let mut writer = pb.wrap_async_write(file);
+    let bytes = tokio::io::copy(&mut reader, &mut writer).await?;
+    pb.finish_with_message("done");
+    Ok(bytes)
 }
 
 #[tokio::main]
@@ -182,16 +244,24 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("探测失败:{}", args.url))?;
 
-    if !supports_range {
-        eprintln!("[WARN] 服务器不支持 Range,降级单线程(M2 todo)");
-        return Err(anyhow::anyhow!("server does not support Range (M2 todo)"));
-    }
+    let multi = MultiProgress::new();
 
-    println!("[GET] {} ({} bytes, {} jobs)", final_url, total, args.jobs);
-    let bytes = download_parallel(client, &final_url, &output_path, total, args.jobs)
-        .await
-        .with_context(|| format!("下载失败:{}", final_url))?;
+    let parallel = supports_range && total >= MIN_PARALLEL_SIZE && args.jobs > 1;
+    let bytes = if parallel {
+        println!("[GET] {} ({} bytes, {} jobs)", final_url, total, args.jobs);
+        download_parallel(client, &final_url, &output_path, total, args.jobs, &multi)
+            .await
+            .with_context(|| format!("下载失败:{}", final_url))?
+    } else {
+        let reason = if !supports_range { "no Range" }
+                     else if total < MIN_PARALLEL_SIZE { "size<1MB" }
+                     else { "jobs=1" };
+        println!("[GET] {} ({} bytes, single - {})", final_url, total, reason);
+        download_single(client, &final_url, &output_path, total, &multi)
+            .await
+            .with_context(|| format!("下载失败:{}", final_url))?
+    };
+
     println!("[OK] 已保存到 {output_path}({bytes} 字节)");
-
     Ok(())
 }
