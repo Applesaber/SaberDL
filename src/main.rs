@@ -68,7 +68,9 @@ async fn run_login(site: &str) -> Result<()> {
                 .with_context(|| "B 站扫码登录失败".to_string())?;
         }
         "netease" | "music" | "n" => {
-            return Err(anyhow::anyhow!("网易云二维码登录即将在 Lesson 14c 实现"));
+            qrlogin::netease::login_with_qrcode()
+                .await
+                .with_context(|| "网易云扫码登录失败".to_string())?;
         }
         other => {
             return Err(anyhow::anyhow!(

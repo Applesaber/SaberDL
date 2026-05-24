@@ -3,3 +3,4 @@
 //   netease : POST /weapi/login/qrcode/{unikey,client/login}(L14c 实现,每个 POST 都要 weapi 加密)
 
 pub mod bilibili;
+pub mod netease;
