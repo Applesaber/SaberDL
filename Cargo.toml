@@ -11,6 +11,7 @@ path = "src/main.rs"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "cookies", "query", "form"] }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 thiserror = "2"
 indicatif = { version = "0.18", features = ["tokio"] }
 anyhow = "1"

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-use saber_dl::{auth, build_downloader, qrlogin};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
+use saber_dl::{auth, build_downloader, config, qrlogin};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -17,8 +18,9 @@ enum Cmd {
         url: String,
         #[arg(short, long)]
         output: Option<PathBuf>,
-        #[arg(short = 'j', long, default_value_t = 8)]
-        jobs: usize,
+        /// 下载并发数 (不传则用 config.toml 里的 default_jobs)
+        #[arg(short = 'j', long)]
+        jobs: Option<usize>,
     },
     /// 通过二维码登录 (bilibili 或 netease,默认 bilibili)
     Login {
@@ -32,6 +34,10 @@ enum Cmd {
     },
     /// 查看当前登录账号 (B 站 + 网易云)
     Whoami,
+    /// 生成 shell 补全脚本 (bash/zsh/fish/powershell/elvish)
+    Completion {
+        shell: Shell,
+    },
 }
 
 #[tokio::main]
@@ -42,10 +48,17 @@ async fn main() -> Result<()> {
         Cmd::Login { site } => run_login(&site).await,
         Cmd::Logout { site } => run_logout(&site).await,
         Cmd::Whoami => run_whoami().await,
+        Cmd::Completion { shell } => {
+            run_completion(shell);
+            Ok(())
+        }
     }
 }
 
-async fn run_get(url: String, output: Option<PathBuf>, jobs: usize) -> Result<()> {
+async fn run_get(url: String, output: Option<PathBuf>, jobs: Option<usize>) -> Result<()> {
+    let cfg = config::load().await;
+    let jobs = jobs.unwrap_or(cfg.download.default_jobs);
+
     let downloader = build_downloader(&url)
         .await
         .with_context(|| "构建 downloader 失败".to_string())?;
@@ -111,4 +124,9 @@ async fn run_whoami() -> Result<()> {
         None => println!("网易云: 尚未登录 (用 `saber-dl login netease`)"),
     }
     Ok(())
+}
+
+fn run_completion(shell: Shell) {
+    let mut cmd = Args::command();
+    clap_complete::generate(shell, &mut cmd, "saber-dl", &mut std::io::stdout());
 }
