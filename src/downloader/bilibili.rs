@@ -432,7 +432,7 @@ impl Downloader for BilibiliDownloader {
                 } else {
                     String::new()
                 };
-                PathBuf::from(format!("[{} + ({})][{}]{}.mp4", title, info.bvid, quality, p_suffix))
+                PathBuf::from(format!("[{} ({})][{}]{}.mp4", title, info.bvid, quality, p_suffix))
             }
         };
 
