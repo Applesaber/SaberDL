@@ -5,6 +5,7 @@ pub mod error;
 pub mod progress;
 pub mod qrlogin;
 pub mod state;
+pub mod url_expander;
 pub(crate) mod crypto;
 
 pub use downloader::{build_downloader, Downloader, HttpDownloader};

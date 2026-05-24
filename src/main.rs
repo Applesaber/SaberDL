@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
-use saber_dl::{auth, build_downloader, config, qrlogin};
-use std::path::PathBuf;
+use saber_dl::{auth, build_downloader, config, qrlogin, url_expander};
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(name = "saber-dl", version, about = "SaberDL 下载器")]
@@ -13,9 +13,14 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// 下载 URL
+    /// 下载 URL (可多个) / 歌单 / 合集
     Get {
-        url: String,
+        /// 要下载的 URL (可重复多个)
+        urls: Vec<String>,
+        /// 从文件读 URL 列表 (每行一个,# 开头是注释)
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// 输出路径 (单 URL 时是文件名,多 URL 时忽略)
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// 下载并发数 (不传则用 config.toml 里的 default_jobs)
@@ -44,7 +49,12 @@ enum Cmd {
 async fn main() -> Result<()> {
     let args = Args::parse();
     match args.cmd {
-        Cmd::Get { url, output, jobs } => run_get(url, output, jobs).await,
+        Cmd::Get {
+            urls,
+            file,
+            output,
+            jobs,
+        } => run_get(urls, file, output, jobs).await,
         Cmd::Login { site } => run_login(&site).await,
         Cmd::Logout { site } => run_logout(&site).await,
         Cmd::Whoami => run_whoami().await,
@@ -55,21 +65,90 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_get(url: String, output: Option<PathBuf>, jobs: Option<usize>) -> Result<()> {
+async fn run_get(
+    mut urls: Vec<String>,
+    file: Option<PathBuf>,
+    output: Option<PathBuf>,
+    jobs: Option<usize>,
+) -> Result<()> {
     let cfg = config::load().await;
     let jobs = jobs.unwrap_or(cfg.download.default_jobs);
 
-    let downloader = build_downloader(&url)
+    if let Some(p) = file {
+        let text = tokio::fs::read_to_string(&p)
+            .await
+            .with_context(|| format!("读取 {} 失败", p.display()))?;
+        for line in text.lines() {
+            let line = line.trim();
+            if !line.is_empty() && !line.starts_with('#') {
+                urls.push(line.to_string());
+            }
+        }
+    }
+
+    if urls.is_empty() {
+        return Err(anyhow::anyhow!(
+            "没有 URL — 用 `saber-dl get URL` 或 `saber-dl get -f urls.txt`"
+        ));
+    }
+
+    let mut expanded = Vec::new();
+    for u in urls {
+        let parts = url_expander::expand(&u)
+            .await
+            .with_context(|| format!("URL 展开失败: {}", u))?;
+        expanded.extend(parts);
+    }
+
+    let n = expanded.len();
+    if n > 1 && output.is_some() {
+        eprintln!("[WARN] 多 URL 时忽略 -o,使用 downloader 自动命名");
+    }
+    let single_output = if n == 1 { output } else { None };
+
+    if n > 1 {
+        println!("[批量] 共 {} 个 URL", n);
+    }
+
+    let mut failed = Vec::new();
+    for (i, u) in expanded.iter().enumerate() {
+        if n > 1 {
+            println!("\n──[ {}/{} ] {}", i + 1, n, u);
+        }
+        if let Err(e) = download_one(u, single_output.as_deref(), jobs).await {
+            eprintln!("[FAIL] {}: {:#}", u, e);
+            failed.push(u.clone());
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!("\n[失败汇总] {} / {} 个 URL:", failed.len(), n);
+        for u in &failed {
+            eprintln!("  ✗ {}", u);
+        }
+        return Err(anyhow::anyhow!("{} 个 URL 下载失败", failed.len()));
+    }
+
+    if n > 1 {
+        println!("\n[全部完成] {} 个 URL", n);
+    }
+    Ok(())
+}
+
+async fn download_one(url: &str, output: Option<&Path>, jobs: usize) -> Result<()> {
+    let downloader = build_downloader(url)
         .await
         .with_context(|| "构建 downloader 失败".to_string())?;
     eprintln!("[模式] {}", downloader.name());
-
     let outcome = downloader
-        .fetch(&url, output.as_deref(), jobs)
+        .fetch(url, output, jobs)
         .await
         .with_context(|| format!("下载失败: {}", url))?;
-
-    println!("[OK] 已保存到 {}({} 字节)", outcome.path.display(), outcome.bytes);
+    println!(
+        "[OK] 已保存到 {} ({} 字节)",
+        outcome.path.display(),
+        outcome.bytes
+    );
     Ok(())
 }
 
