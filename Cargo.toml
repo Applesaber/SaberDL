@@ -39,3 +39,6 @@ cbc = { version = "0.1", features = ["std"] }
 num-bigint-dig = "0.8"
 num-traits = "0.2"
 hex = "0.4"
+
+# 音频元数据 (统一 MP3/FLAC/M4A 等)
+lofty = "0.21"
