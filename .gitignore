@@ -2,5 +2,6 @@
 /test_resume.sh
 /.vs/
 /.idea/
+/.sisyphus/
 *.mp4
 *.m4s
