@@ -29,6 +29,8 @@ pub struct VideoInfo {
     pub duration: i32,
     pub stat: Stat,
     pub pages: Vec<Page>,
+    #[serde(default)]
+    pub pic: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,6 +257,17 @@ impl BilibiliDownloader {
         Err(DownloadError::UrlParse(format!("找不到 BV 号: {}", url)))
     }
 
+    // 从 URL 解析 ?p=N(1-based),没传默认 P1
+    fn parse_page_num(&self, url: &str) -> usize {
+        url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.query_pairs()
+                .find(|(k, _)| k == "p")
+                .and_then(|(_, v)| v.parse::<usize>().ok()))
+            .map(|n| n.max(1))
+            .unwrap_or(1)
+    }
+
     // 辅助函数：打印视频信息
     fn print_video_info(&self, info: &VideoInfo) {
         println!("════ B 站视频元信息 ════");
@@ -304,6 +317,50 @@ impl BilibiliDownloader {
         }
         parsed.data.ok_or(DownloadError::BiliApi("no playurl data".into(), 0))
     }
+
+    // b23.tv 短链跟随重定向拿到长链(api.bilibili.com/video/BVxxx)
+    async fn resolve_short_url(&self, url: &str) -> Result<String, DownloadError> {
+        if !url.contains("b23.tv/") {
+            return Ok(url.to_string());
+        }
+        let resp = self.api_client.get(url).send().await?;
+        Ok(resp.url().to_string())
+    }
+
+    // 封面图: info.pic 是 http(s) 直链;小文件 + 单连接,不用走多线程 download_with_client
+    async fn download_cover(&self, pic_url: &str, output_jpg: &Path)
+        -> Result<(), DownloadError>
+    {
+        if pic_url.is_empty() {
+            return Ok(());
+        }
+        let bytes = self.cdn_client.get(pic_url).send().await?
+            .error_for_status()?
+            .bytes().await?;
+        tokio::fs::write(output_jpg, &bytes).await?;
+        Ok(())
+    }
+
+    // 弹幕老接口(2019 前): comment.bilibili.com/{cid}.xml
+    // B 站怪癖:响应头 Content-Encoding: deflate 但实际是 raw deflate(无 zlib 78 9c wrapper)
+    // 主流 HTTP 客户端自动 inflate 会失败,必须手动 raw inflate
+    async fn download_danmaku(&self, cid: u64, output_xml: &Path)
+        -> Result<(), DownloadError>
+    {
+        use std::io::Read;
+        let url = format!("https://comment.bilibili.com/{}.xml", cid);
+        let compressed = self.cdn_client.get(&url).send().await?
+            .error_for_status()?
+            .bytes().await?;
+
+        let mut decoder = flate2::read::DeflateDecoder::new(&compressed[..]);
+        let mut xml = String::new();
+        decoder.read_to_string(&mut xml)
+            .map_err(|e| DownloadError::Other(format!("弹幕 inflate 失败: {e}")))?;
+
+        tokio::fs::write(output_xml, &xml).await?;
+        Ok(())
+    }
 }
 
 // 实现 Downloader trait
@@ -325,10 +382,23 @@ impl Downloader for BilibiliDownloader {
     ) -> Result<FetchOutcome, DownloadError> {
         check_ffmpeg().await?;
 
-        let bvid = self.parse_bvid_from_url(url)?;
+        let real_url = self.resolve_short_url(url).await?;
+        let bvid = self.parse_bvid_from_url(&real_url)?;
         let info = self.fetch_video_info(&bvid).await?;
         self.print_video_info(&info);
-        let cid = info.pages[0].cid;
+
+        let page_num = self.parse_page_num(&real_url);
+        let page = info.pages.get(page_num - 1).ok_or_else(|| {
+            DownloadError::Other(format!(
+                "分 P {} 不存在(视频共 {} P)",
+                page_num,
+                info.pages.len()
+            ))
+        })?;
+        let cid = page.cid;
+        if info.pages.len() > 1 {
+            println!("选择: P{} - {}", page.page, page.part);
+        }
 
         let play = self.fetch_playurl(&bvid, cid).await?;
         let video = play
@@ -351,13 +421,18 @@ impl Downloader for BilibiliDownloader {
             audio.bandwidth / 1000
         );
 
-        // 输出路径优先级: 用户 -o > 自动 [标题 + (BV号)][清晰度].mp4
+        // 输出路径优先级: 用户 -o > 自动 [标题 + (BV号)][清晰度].mp4(多 P 视频追加 [P{n}-{分 P 标题}])
         let output_path = match output {
             Some(p) => p.to_path_buf(),
             None => {
                 let title = sanitize_filename(&info.title);
                 let quality = quality_label(video.height);
-                PathBuf::from(format!("[{} + ({})][{}].mp4", title, info.bvid, quality))
+                let p_suffix = if info.pages.len() > 1 {
+                    format!("[P{}-{}]", page.page, sanitize_filename(&page.part))
+                } else {
+                    String::new()
+                };
+                PathBuf::from(format!("[{} + ({})][{}]{}.mp4", title, info.bvid, quality, p_suffix))
             }
         };
 
@@ -373,6 +448,21 @@ impl Downloader for BilibiliDownloader {
 
         println!("--- ffmpeg 合并 ---");
         merge_with_ffmpeg(&v_path, &a_path, &output_path).await?;
+
+        // 附带资源:封面 .jpg + 弹幕 .xml,失败不中断主流程(用户已经拿到 mp4)
+        let cover_path = output_path.with_extension("jpg");
+        if let Err(e) = self.download_cover(&info.pic, &cover_path).await {
+            eprintln!("[WARN] 封面下载失败: {e}");
+        } else if cover_path.exists() {
+            println!("--- 封面已保存 {} ---", cover_path.display());
+        }
+
+        let danmaku_path = output_path.with_extension("xml");
+        if let Err(e) = self.download_danmaku(cid, &danmaku_path).await {
+            eprintln!("[WARN] 弹幕下载失败: {e}");
+        } else if danmaku_path.exists() {
+            println!("--- 弹幕已保存 {} ---", danmaku_path.display());
+        }
 
         let bytes = tokio::fs::metadata(&output_path).await?.len();
         Ok(FetchOutcome { bytes, path: output_path })
