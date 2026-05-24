@@ -7,6 +7,7 @@ use tokio::process::Command;
 use crate::auth::Cookies;
 use crate::downloader::{Downloader, download_with_client};
 use crate::error::DownloadError;
+use crate::wbi::WbiSigner;
 
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
                           (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -135,6 +136,7 @@ async fn check_ffmpeg() -> Result<(), DownloadError> {
 pub struct BilibiliDownloader {
     api_client: reqwest::Client,
     cdn_client: reqwest::Client,
+    wbi: WbiSigner,
 }
 
 impl Default for BilibiliDownloader {
@@ -147,9 +149,11 @@ impl BilibiliDownloader {
     pub fn new(cookies: Option<Cookies>) -> Self {
         let api_client = Self::build_api_client(cookies);
         let cdn_client = Self::build_cdn_client();
+        let wbi = WbiSigner::new(api_client.clone());
         Self {
             api_client,
             cdn_client,
+            wbi
         }
     }
 
@@ -238,29 +242,33 @@ impl BilibiliDownloader {
         }
     }
 
-    async fn fetch_playurl(&self, bvid: &str, cid: u64) -> Result<PlayUrlData, DownloadError> {
-        let resp = self
-            .api_client
-            .get("https://api.bilibili.com/x/player/playurl")
-            .query(&[
-                ("bvid", bvid.to_string()),
-                ("cid", cid.to_string()),
-                ("qn", "80".to_string()),
-                ("fnval", "4048".to_string()),
-                ("fnver", "0".to_string()),
-                ("fourk", "1".to_string()),
-            ])
-            .send()
-            .await?
+    async fn fetch_playurl(&self, bvid: &str, cid: u64)
+        -> Result<PlayUrlData, DownloadError>
+    {
+        let params: Vec<(String, String)> = vec![
+            ("bvid".into(), bvid.to_string()),
+            ("cid".into(), cid.to_string()),
+            ("qn".into(), "80".to_string()),
+            ("fnval".into(), "4048".to_string()),
+            ("fnver".into(), "0".to_string()),
+            ("fourk".into(), "1".to_string()),
+        ];
+        let signed_query = self.wbi.sign(params).await?;
+
+        let url = format!(
+            "https://api.bilibili.com/x/player/wbi/playurl?{}",
+            signed_query
+        );
+
+        let resp = self.api_client.get(&url)
+            .send().await?
             .error_for_status()?;
 
         let parsed: BiliResponse<PlayUrlData> = resp.json().await?;
         if parsed.code != 0 {
             return Err(DownloadError::BiliApi(parsed.message, parsed.code));
         }
-        parsed
-            .data
-            .ok_or(DownloadError::BiliApi("no playurl data".into(), 0))
+        parsed.data.ok_or(DownloadError::BiliApi("no playurl data".into(), 0))
     }
 }
 
