@@ -1,11 +1,11 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::process::Command;
 
 use crate::auth::Cookies;
-use crate::downloader::{Downloader, download_with_client};
+use crate::downloader::{Downloader, FetchOutcome, download_with_client};
 use crate::error::DownloadError;
 use crate::wbi::WbiSigner;
 
@@ -79,6 +79,40 @@ pub struct DashStream {
     pub bandwidth: u64,
     #[serde(rename = "baseUrl")]
     pub base_url: String,
+}
+
+// ========== 文件名工具 ==========
+
+// Windows + Unix 兼容的文件名净化:替换 / \ : * ? " < > | 及控制字符为 _,trim 末尾点/空格,限长 150 字符
+fn sanitize_filename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches(|c: char| c == '.' || c == ' ');
+    let limited: String = trimmed.chars().take(150).collect();
+    if limited.is_empty() {
+        "untitled".to_string()
+    } else {
+        limited
+    }
+}
+
+fn quality_label(height: u32) -> &'static str {
+    match height {
+        h if h >= 4320 => "8K",
+        h if h >= 2160 => "4K",
+        h if h >= 1440 => "2K",
+        h if h >= 1080 => "1080P",
+        h if h >= 720 => "720P",
+        h if h >= 480 => "480P",
+        h if h >= 360 => "360P",
+        _ => "240P",
+    }
 }
 
 // ========== ffmpeg ==========
@@ -283,7 +317,12 @@ impl Downloader for BilibiliDownloader {
         "B站解析"
     }
 
-    async fn fetch(&self, url: &str, output: &Path, jobs: usize) -> Result<u64, DownloadError> {
+    async fn fetch(
+        &self,
+        url: &str,
+        output: Option<&Path>,
+        jobs: usize,
+    ) -> Result<FetchOutcome, DownloadError> {
         check_ffmpeg().await?;
 
         let bvid = self.parse_bvid_from_url(url)?;
@@ -312,6 +351,16 @@ impl Downloader for BilibiliDownloader {
             audio.bandwidth / 1000
         );
 
+        // 输出路径优先级: 用户 -o > 自动 [标题 + (BV号)][清晰度].mp4
+        let output_path = match output {
+            Some(p) => p.to_path_buf(),
+            None => {
+                let title = sanitize_filename(&info.title);
+                let quality = quality_label(video.height);
+                PathBuf::from(format!("[{} + ({})][{}].mp4", title, info.bvid, quality))
+            }
+        };
+
         let tmpdir = tempfile::tempdir().map_err(DownloadError::Io)?;
         let v_path = tmpdir.path().join("video.m4s");
         let a_path = tmpdir.path().join("audio.m4s");
@@ -323,8 +372,9 @@ impl Downloader for BilibiliDownloader {
         download_with_client(self.cdn_client.clone(), &audio.base_url, &a_path, jobs).await?;
 
         println!("--- ffmpeg 合并 ---");
-        merge_with_ffmpeg(&v_path, &a_path, output).await?;
+        merge_with_ffmpeg(&v_path, &a_path, &output_path).await?;
 
-        Ok(tokio::fs::metadata(output).await?.len())
+        let bytes = tokio::fs::metadata(&output_path).await?.len();
+        Ok(FetchOutcome { bytes, path: output_path })
     }
 }

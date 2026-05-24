@@ -8,7 +8,7 @@ use indicatif::{MultiProgress, ProgressBar};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::StreamReader;
 
-use crate::downloader::Downloader;
+use crate::downloader::{Downloader, FetchOutcome};
 use crate::error::DownloadError;
 use crate::progress::{total_style, worker_style};
 use crate::state::{
@@ -31,6 +31,18 @@ impl HttpDownloader {
             .expect("reqwest client build (basic config) should not fail");
         Self { client }
     }
+
+    // url crate 解析 → 取最后非空 path 段(自动过滤 query/fragment)
+    // 失败时 fallback "downloaded_file"
+    fn default_output_name(url: &str) -> PathBuf {
+        url::Url::parse(url)
+            .ok()
+            .as_ref()
+            .and_then(|u| u.path_segments())
+            .and_then(|s| s.filter(|p| !p.is_empty()).last())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("downloaded_file"))
+    }
 }
 
 impl Default for HttpDownloader {
@@ -48,11 +60,20 @@ impl Downloader for HttpDownloader {
         "通用下载"
     }
 
-    async fn fetch(&self, url: &str, output: &Path, jobs: usize) -> Result<u64, DownloadError> {
-        download_with_client(self.client.clone(), url, output, jobs).await
+    async fn fetch(
+        &self,
+        url: &str,
+        output: Option<&Path>,
+        jobs: usize,
+    ) -> Result<FetchOutcome, DownloadError> {
+        let output_path = output
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| Self::default_output_name(url));
+        let bytes =
+            download_with_client(self.client.clone(), url, &output_path, jobs).await?;
+        Ok(FetchOutcome { bytes, path: output_path })
     }
 }
-
 pub(crate) async fn download_with_client(
     client: reqwest::Client,
     url: &str,

@@ -57,18 +57,18 @@ async fn main() -> Result<()> {
     }
 }
 async fn run_get(url: String, output: Option<PathBuf>, jobs: usize) -> Result<()> {
-    let output: PathBuf = output
-        .unwrap_or_else(|| PathBuf::from(url.rsplit('/').next().unwrap_or("downloaded_file")));
     let cookies = std::env::var("BILIBILI_SESSDATA")
         .ok()
         .map(Cookies::sessdata_only)
         .or(auth::load().await.ok().flatten());
     let downloader = build_downloader(&url, cookies);
     eprintln!("[模式] {}", downloader.name());
-    let bytes = downloader
-        .fetch(&url, &output, jobs)
+
+    let outcome = downloader
+        .fetch(&url, output.as_deref(), jobs)
         .await
         .with_context(|| format!("下载失败: {}", url))?;
-    println!("[OK] 已保存到 {}({} 字节)", output.display(), bytes);
+
+    println!("[OK] 已保存到 {}({} 字节)", outcome.path.display(), outcome.bytes);
     Ok(())
 }
