@@ -4,10 +4,12 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::auth::Cookies;
+use crate::auth::bilibili::BilibiliCookies;
 use crate::downloader::{Downloader, FetchOutcome, download_with_client};
 use crate::error::DownloadError;
-use crate::wbi::WbiSigner;
+
+pub mod wbi;
+use wbi::WbiSigner;
 
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
                           (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -182,7 +184,7 @@ impl Default for BilibiliDownloader {
 }
 
 impl BilibiliDownloader {
-    pub fn new(cookies: Option<Cookies>) -> Self {
+    pub fn new(cookies: Option<BilibiliCookies>) -> Self {
         let api_client = Self::build_api_client(cookies);
         let cdn_client = Self::build_cdn_client();
         let wbi = WbiSigner::new(api_client.clone());
@@ -193,7 +195,11 @@ impl BilibiliDownloader {
         }
     }
 
-    fn build_api_client(cookies: Option<Cookies>) -> reqwest::Client {
+    pub fn matches(url: &str) -> bool {
+        url.contains("bilibili.com/video/") || url.contains("b23.tv/")
+    }
+
+    fn build_api_client(cookies: Option<BilibiliCookies>) -> reqwest::Client {
         let mut builder = reqwest::Client::builder().user_agent(BROWSER_UA);
 
         if let Some(c) = cookies {
@@ -366,10 +372,6 @@ impl BilibiliDownloader {
 // 实现 Downloader trait
 #[async_trait]
 impl Downloader for BilibiliDownloader {
-    fn can_handle(&self, url: &str) -> bool {
-        url.contains("bilibili.com/video/") || url.contains("b23.tv/")
-    }
-
     fn name(&self) -> &'static str {
         "B站解析"
     }

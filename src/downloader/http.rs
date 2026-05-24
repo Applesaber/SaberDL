@@ -53,9 +53,6 @@ impl Default for HttpDownloader {
 
 #[async_trait]
 impl Downloader for HttpDownloader {
-    fn can_handle(&self, _url: &str) -> bool {
-        true
-    }
     fn name(&self) -> &'static str {
         "通用下载"
     }

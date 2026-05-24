@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
 
-use crate::auth::{AuthError, Cookies, save as save_cookies};
+use crate::auth::AuthError;
+use crate::auth::bilibili::{BilibiliCookies, save as save_cookies};
 
 const GENERATE_URL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
 const POLL_URL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
@@ -15,6 +16,7 @@ const INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Deserialize)]
 struct BiliResp<T> {
+    #[allow(dead_code)]
     code: i64,
     data: Option<T>,
 }
@@ -30,25 +32,19 @@ struct PollData {
     code: i64,
 }
 
-pub async fn login_with_qrcode() -> Result<Cookies, AuthError> {
+pub async fn login_with_qrcode() -> Result<BilibiliCookies, AuthError> {
     let jar = Arc::new(Jar::default());
     let client = Client::builder()
         .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
         .cookie_provider(Arc::clone(&jar))
         .build()?;
 
-    // 生成二维码
     let resp_gen: BiliResp<GenerateData> = client.get(GENERATE_URL).send().await?.json().await?;
-    if resp_gen.code != 0 {
-        return Err(AuthError::Api(resp_gen.code));
-    }
     let g = resp_gen.data.ok_or(AuthError::EmptyData)?;
 
-    // 渲染
     println!("\n{}", render_qrcode(&g.url)?);
     println!("请用 B 站手机 APP 扫码登录(超时 180 秒)\n");
 
-    // 轮询
     poll_until_login(&client, &g.qrcode_key, &jar).await
 }
 
@@ -65,7 +61,7 @@ async fn poll_until_login(
     client: &Client,
     key: &str,
     jar: &Arc<Jar>,
-) -> Result<Cookies, AuthError> {
+) -> Result<BilibiliCookies, AuthError> {
     let start = Instant::now();
     let mut prompted = false;
 
@@ -102,7 +98,7 @@ async fn poll_until_login(
     }
 }
 
-fn extract_cookies_from_jar(jar: &Jar) -> Result<Cookies, AuthError> {
+fn extract_cookies_from_jar(jar: &Jar) -> Result<BilibiliCookies, AuthError> {
     let url: reqwest::Url = "https://www.bilibili.com".parse().unwrap();
     let all = jar
         .cookies(&url)
@@ -116,7 +112,7 @@ fn extract_cookies_from_jar(jar: &Jar) -> Result<Cookies, AuthError> {
         })
     }
 
-    Ok(Cookies {
+    Ok(BilibiliCookies {
         sessdata: pick(&all, "SESSDATA").ok_or(AuthError::MissingCookie("SESSDATA"))?,
         bili_jct: pick(&all, "bili_jct").ok_or(AuthError::MissingCookie("bili_jct"))?,
         dedeuserid: pick(&all, "DedeUserID").ok_or(AuthError::MissingCookie("DedeUserID"))?,
