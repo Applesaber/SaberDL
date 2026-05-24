@@ -2850,7 +2850,7 @@ async-trait = "0.1"
 读者现在的 SaberDL 是个**通用 HTTP 下载器**,给个 URL 就下。但 B 站视频不是「一个 URL」:
 
 ```text
-用户看到:  https://www.bilibili.com/video/BV1xx411c7mu
+用户看到:  https://www.bilibili.com/video/BV1D142147hB
 
 实际需要:
   ① 解析 URL → 提取 BV 号
@@ -9810,6 +9810,3 @@ saber-dl get -f my-favorites.txt                           # 文件清单
   4. 读者贴代码 / 报错
   5. code review / 翻译报错
   6. 重复直到验收通过
-  7. 开下一课
-
-** 一起加油**
