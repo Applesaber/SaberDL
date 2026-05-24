@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -39,12 +39,19 @@ pub struct Cookies {
 
 impl Cookies {
     pub fn sessdata_only(sessdata: String) -> Self {
-        Self { sessdata, bili_jct: String::new(), dedeuserid: String::new(), refresh_token: None }
+        Self {
+            sessdata,
+            bili_jct: String::new(),
+            dedeuserid: String::new(),
+            refresh_token: None,
+        }
     }
 }
 
 fn config_path() -> Result<PathBuf, AuthError> {
-    let dir = dirs::config_dir().ok_or(AuthError::NoConfigDir)?.join("saber-dl");
+    let dir = dirs::config_dir()
+        .ok_or(AuthError::NoConfigDir)?
+        .join("saber-dl");
     Ok(dir.join("cookies.toml"))
 }
 
@@ -60,14 +67,18 @@ pub async fn save(c: &Cookies) -> Result<(), AuthError> {
 
 pub async fn load() -> Result<Option<Cookies>, AuthError> {
     let path = config_path()?;
-    if !path.exists() { return Ok(None); }
+    if !path.exists() {
+        return Ok(None);
+    }
     let s = tokio::fs::read_to_string(&path).await?;
     Ok(Some(toml::from_str::<Cookies>(&s)?))
 }
 
 pub async fn delete() -> Result<bool, AuthError> {
     let path = config_path()?;
-    if !path.exists() { return Ok(false); }
+    if !path.exists() {
+        return Ok(false);
+    }
     tokio::fs::remove_file(&path).await?;
     Ok(true)
 }

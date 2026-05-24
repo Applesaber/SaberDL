@@ -14,7 +14,12 @@ pub enum DownloadError {
     NoContentLength,
     #[error("download interrupted by user")]
     Interrupted,
-    
+
+    #[error("ffmpeg not found or failed: {0}")]
+    Ffmpeg(String),
+    #[error("DASH stream selection failed: {0}")]
+    NoStream(&'static str),
+
     #[error("Bilibili API error: {0} (code={1})")]
     BiliApi(String, i64),
     #[error("URL parse failed: {0}")]
@@ -24,9 +29,13 @@ pub enum DownloadError {
 }
 
 impl From<reqwest::Error> for DownloadError {
-    fn from(err: reqwest::Error) -> Self { DownloadError::Http(err) }
+    fn from(err: reqwest::Error) -> Self {
+        DownloadError::Http(err)
+    }
 }
 
 impl From<io::Error> for DownloadError {
-    fn from(err: io::Error) -> Self { DownloadError::Io(err) }
+    fn from(err: io::Error) -> Self {
+        DownloadError::Io(err)
+    }
 }

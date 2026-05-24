@@ -1,12 +1,12 @@
+use qrcode::{QrCode, render::unicode};
+use reqwest::Client;
+use reqwest::cookie::{CookieStore, Jar};
+use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
-use qrcode::{render::unicode, QrCode};
-use reqwest::cookie::{CookieStore, Jar};
-use reqwest::Client;
-use serde::Deserialize;
-use tokio::time::{sleep, Instant};
+use tokio::time::{Instant, sleep};
 
-use crate::auth::{save as save_cookies, AuthError, Cookies};
+use crate::auth::{AuthError, Cookies, save as save_cookies};
 
 const GENERATE_URL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
 const POLL_URL: &str = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
@@ -20,10 +20,15 @@ struct BiliResp<T> {
 }
 
 #[derive(Debug, Deserialize)]
-struct GenerateData { url: String, qrcode_key: String }
+struct GenerateData {
+    url: String,
+    qrcode_key: String,
+}
 
 #[derive(Debug, Deserialize)]
-struct PollData { code: i64 }
+struct PollData {
+    code: i64,
+}
 
 pub async fn login_with_qrcode() -> Result<Cookies, AuthError> {
     let jar = Arc::new(Jar::default());
@@ -34,7 +39,9 @@ pub async fn login_with_qrcode() -> Result<Cookies, AuthError> {
 
     // 生成二维码
     let resp_gen: BiliResp<GenerateData> = client.get(GENERATE_URL).send().await?.json().await?;
-    if resp_gen.code != 0 { return Err(AuthError::Api(resp_gen.code)); }
+    if resp_gen.code != 0 {
+        return Err(AuthError::Api(resp_gen.code));
+    }
     let g = resp_gen.data.ok_or(AuthError::EmptyData)?;
 
     // 渲染
@@ -46,26 +53,34 @@ pub async fn login_with_qrcode() -> Result<Cookies, AuthError> {
 }
 
 fn render_qrcode(url: &str) -> Result<String, AuthError> {
-    let code = QrCode::new(url.as_bytes())
-        .map_err(|e| AuthError::Qr(e.to_string()))?;
-    Ok(code.render::<unicode::Dense1x2>()
+    let code = QrCode::new(url.as_bytes()).map_err(|e| AuthError::Qr(e.to_string()))?;
+    Ok(code
+        .render::<unicode::Dense1x2>()
         .dark_color(unicode::Dense1x2::Light)
         .light_color(unicode::Dense1x2::Dark)
         .build())
 }
 
-async fn poll_until_login(client: &Client, key: &str, jar: &Arc<Jar>)
-                          -> Result<Cookies, AuthError>
-{
+async fn poll_until_login(
+    client: &Client,
+    key: &str,
+    jar: &Arc<Jar>,
+) -> Result<Cookies, AuthError> {
     let start = Instant::now();
     let mut prompted = false;
 
     loop {
-        if start.elapsed() > TIMEOUT { return Err(AuthError::Timeout); }
+        if start.elapsed() > TIMEOUT {
+            return Err(AuthError::Timeout);
+        }
 
-        let p: BiliResp<PollData> = client.get(POLL_URL)
+        let p: BiliResp<PollData> = client
+            .get(POLL_URL)
             .query(&[("qrcode_key", key)])
-            .send().await?.json().await?;
+            .send()
+            .await?
+            .json()
+            .await?;
         let d = p.data.ok_or(AuthError::EmptyData)?;
 
         match d.code {
@@ -89,7 +104,8 @@ async fn poll_until_login(client: &Client, key: &str, jar: &Arc<Jar>)
 
 fn extract_cookies_from_jar(jar: &Jar) -> Result<Cookies, AuthError> {
     let url: reqwest::Url = "https://www.bilibili.com".parse().unwrap();
-    let all = jar.cookies(&url)
+    let all = jar
+        .cookies(&url)
         .map(|h| h.to_str().unwrap_or("").to_string())
         .unwrap_or_default();
 

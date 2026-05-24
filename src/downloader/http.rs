@@ -12,8 +12,8 @@ use crate::downloader::Downloader;
 use crate::error::DownloadError;
 use crate::progress::{total_style, worker_style};
 use crate::state::{
-    load_or_create_state, save_state_atomic, state_path,
-    Chunk, ChunkStatus, DownloadMeta, DownloadState,
+    Chunk, ChunkStatus, DownloadMeta, DownloadState, load_or_create_state, save_state_atomic,
+    state_path,
 };
 
 const MIN_PARALLEL_SIZE: u64 = 1024 * 1024;
@@ -34,7 +34,9 @@ impl HttpDownloader {
 }
 
 impl Default for HttpDownloader {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
@@ -42,29 +44,43 @@ impl Downloader for HttpDownloader {
     fn can_handle(&self, _url: &str) -> bool {
         true
     }
+    fn name(&self) -> &'static str {
+        "通用下载"
+    }
 
-    async fn fetch(
-        &self,
-        url: &str,
-        output: &Path,
-        jobs: usize,
-    ) -> Result<u64, DownloadError> {
-        let (meta, supports_range) = probe_with_range(&self.client, url).await?;
-        let multi = MultiProgress::new();
+    async fn fetch(&self, url: &str, output: &Path, jobs: usize) -> Result<u64, DownloadError> {
+        download_with_client(self.client.clone(), url, output, jobs).await
+    }
+}
 
-        let parallel = supports_range && meta.total >= MIN_PARALLEL_SIZE && jobs > 1;
-        if parallel {
-            println!("[GET] {} ({} bytes, {} jobs)", meta.url, meta.total, jobs);
-            let sp = state_path(output);
-            let state = load_or_create_state(&sp, &meta, jobs).await?;
-            download_parallel(self.client.clone(), output, state, &multi).await
+pub(crate) async fn download_with_client(
+    client: reqwest::Client,
+    url: &str,
+    output: &Path,
+    jobs: usize,
+) -> Result<u64, DownloadError> {
+    let (meta, supports_range) = probe_with_range(&client, url).await?;
+    let multi = MultiProgress::new();
+
+    let parallel = supports_range && meta.total >= MIN_PARALLEL_SIZE && jobs > 1;
+    if parallel {
+        println!("[GET] {} ({} bytes, {} jobs)", meta.url, meta.total, jobs);
+        let sp = state_path(output);
+        let state = load_or_create_state(&sp, &meta, jobs).await?;
+        download_parallel(client, output, state, &multi).await
+    } else {
+        let reason = if !supports_range {
+            "no Range"
+        } else if meta.total < MIN_PARALLEL_SIZE {
+            "size<1MB"
         } else {
-            let reason = if !supports_range { "no Range" }
-                         else if meta.total < MIN_PARALLEL_SIZE { "size<1MB" }
-                         else { "jobs=1" };
-            println!("[GET] {} ({} bytes, single - {})", meta.url, meta.total, reason);
-            download_single(self.client.clone(), &meta.url, output, meta.total, &multi).await
-        }
+            "jobs=1"
+        };
+        println!(
+            "[GET] {} ({} bytes, single - {})",
+            meta.url, meta.total, reason
+        );
+        download_single(client, &meta.url, output, meta.total, &multi).await
     }
 }
 
@@ -75,7 +91,8 @@ async fn probe_with_range(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<(DownloadMeta, bool), DownloadError> {
-    let resp = client.get(url)
+    let resp = client
+        .get(url)
         .header(reqwest::header::RANGE, "bytes=0-0")
         .send()
         .await?;
@@ -83,11 +100,13 @@ async fn probe_with_range(
     let status = resp.status();
     let final_url = resp.url().to_string();
 
-    let etag = resp.headers()
+    let etag = resp
+        .headers()
         .get(reqwest::header::ETAG)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    let last_modified = resp.headers()
+    let last_modified = resp
+        .headers()
         .get(reqwest::header::LAST_MODIFIED)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
@@ -95,23 +114,42 @@ async fn probe_with_range(
     match status.as_u16() {
         206 => {
             // Content-Range: "bytes 0-0/302078113" -> 取斜杠后的总大小
-            let cr = resp.headers()
+            let cr = resp
+                .headers()
                 .get(reqwest::header::CONTENT_RANGE)
                 .and_then(|v| v.to_str().ok())
                 .ok_or(DownloadError::NoContentLength)?;
-            let total: u64 = cr.rsplit('/')
+            let total: u64 = cr
+                .rsplit('/')
                 .next()
                 .and_then(|s| s.parse().ok())
                 .filter(|n: &u64| *n > 0)
                 .ok_or(DownloadError::NoContentLength)?;
-            Ok((DownloadMeta { url: final_url, total, etag, last_modified }, true))
+            Ok((
+                DownloadMeta {
+                    url: final_url,
+                    total,
+                    etag,
+                    last_modified,
+                },
+                true,
+            ))
         }
         200 => {
             // 服务器忽略 Range,只能走单连接;此处仍记录大小供 fallback 使用
-            let total = resp.content_length()
+            let total = resp
+                .content_length()
                 .filter(|n| *n > 0)
                 .ok_or(DownloadError::NoContentLength)?;
-            Ok((DownloadMeta { url: final_url, total, etag, last_modified }, false))
+            Ok((
+                DownloadMeta {
+                    url: final_url,
+                    total,
+                    etag,
+                    last_modified,
+                },
+                false,
+            ))
         }
         _ => Err(DownloadError::BadStatus(status.as_u16())),
     }
@@ -126,7 +164,8 @@ async fn download_chunk(
     total_pb: ProgressBar,
 ) -> Result<u64, DownloadError> {
     let range = format!("bytes={}-{}", chunk.start, chunk.end);
-    let resp = client.get(&url)
+    let resp = client
+        .get(&url)
         .header(reqwest::header::RANGE, range)
         .send()
         .await?;
@@ -168,7 +207,11 @@ async fn download_parallel(
     let url = state.url.clone();
 
     let file = tokio::fs::OpenOptions::new()
-        .create(true).write(true).truncate(false).open(output_path).await?;
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(output_path)
+        .await?;
     file.set_len(state.total).await?;
     drop(file);
 
@@ -181,11 +224,15 @@ async fn download_parallel(
 
     let (done_bytes, chunks_to_do) = {
         let s = state.lock().await;
-        let done: u64 = s.chunks.iter()
+        let done: u64 = s
+            .chunks
+            .iter()
             .filter(|c| c.status == ChunkStatus::Completed)
             .map(|c| c.end - c.start + 1)
             .sum();
-        let todo: Vec<_> = s.chunks.iter()
+        let todo: Vec<_> = s
+            .chunks
+            .iter()
             .filter(|c| c.status != ChunkStatus::Completed)
             .cloned()
             .collect();
@@ -207,7 +254,11 @@ async fn download_parallel(
         let sp = sp.clone();
 
         set.spawn(async move {
-            let chunk = Chunk { index: ck.index, start: ck.start, end: ck.end };
+            let chunk = Chunk {
+                index: ck.index,
+                start: ck.start,
+                end: ck.end,
+            };
             let bytes = download_chunk(client, url, output_path, chunk, pb, total_pb_w).await?;
 
             let mut s = state.lock().await;
@@ -223,8 +274,8 @@ async fn download_parallel(
         let mut total_bytes = done_bytes;
         while let Some(result) = set.join_next().await {
             // 外层 ? : tokio JoinError(任务 panic 等);内层 ? : DownloadError
-            let chunk_bytes = result
-                .map_err(|e| DownloadError::Io(io::Error::other(e.to_string())))??;
+            let chunk_bytes =
+                result.map_err(|e| DownloadError::Io(io::Error::other(e.to_string())))??;
             total_bytes += chunk_bytes;
         }
         Ok::<u64, DownloadError>(total_bytes)

@@ -1,9 +1,9 @@
+pub mod auth;
 pub mod downloader;
 pub mod error;
 pub mod progress;
-pub mod state;
-pub mod auth;
 pub mod qrlogin;
+pub mod state;
 
-pub use downloader::{build_downloader, Downloader, HttpDownloader};
+pub use downloader::{Downloader, HttpDownloader, build_downloader};
 pub use error::DownloadError;
