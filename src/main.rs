@@ -31,6 +31,10 @@ enum Cmd {
     Login {
         #[arg(default_value = "bilibili")]
         site: String,
+        /// 跳过二维码,直接用浏览器复制的 cookie 字符串
+        /// (网易云 8821 风控时使用,只支持 netease)
+        #[arg(long)]
+        cookie: Option<String>,
     },
     /// 删除本地 cookies (bilibili 或 netease,默认 bilibili)
     Logout {
@@ -55,7 +59,7 @@ async fn main() -> Result<()> {
             output,
             jobs,
         } => run_get(urls, file, output, jobs).await,
-        Cmd::Login { site } => run_login(&site).await,
+        Cmd::Login { site, cookie } => run_login(&site, cookie).await,
         Cmd::Logout { site } => run_logout(&site).await,
         Cmd::Whoami => run_whoami().await,
         Cmd::Completion { shell } => {
@@ -152,18 +156,30 @@ async fn download_one(url: &str, output: Option<&Path>, jobs: usize) -> Result<(
     Ok(())
 }
 
-async fn run_login(site: &str) -> Result<()> {
+async fn run_login(site: &str, cookie: Option<String>) -> Result<()> {
     match site {
         "bilibili" | "bili" | "b" => {
+            if cookie.is_some() {
+                return Err(anyhow::anyhow!(
+                    "B 站暂不支持 --cookie 模式,用 `saber-dl login` 扫码"
+                ));
+            }
             qrlogin::bilibili::login_with_qrcode()
                 .await
                 .with_context(|| "B 站扫码登录失败".to_string())?;
         }
-        "netease" | "music" | "n" => {
-            qrlogin::netease::login_with_qrcode()
-                .await
-                .with_context(|| "网易云扫码登录失败".to_string())?;
-        }
+        "netease" | "music" | "n" => match cookie {
+            Some(c) => {
+                qrlogin::netease::login_with_cookie(&c)
+                    .await
+                    .with_context(|| "网易云 cookie 登录失败".to_string())?;
+            }
+            None => {
+                qrlogin::netease::login_with_qrcode()
+                    .await
+                    .with_context(|| "网易云扫码登录失败".to_string())?;
+            }
+        },
         other => {
             return Err(anyhow::anyhow!(
                 "未知 site: {} (支持: bilibili / netease)",

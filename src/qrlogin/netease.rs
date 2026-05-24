@@ -132,6 +132,16 @@ async fn poll_until_login(
                 return Ok(cookies);
             }
             800 => return Err(AuthError::QrExpired),
+            8821 => {
+                return Err(AuthError::Crypto(
+                    "网易云风控触发 (code=8821 需要行为验证码)\n  \
+                     原因: 非浏览器 TLS 指纹被识别。建议改用 cookie 登录:\n  \
+                       1) 浏览器登录 music.163.com\n  \
+                       2) F12 → Application → Cookies → 复制 MUSIC_U 值\n  \
+                       3) saber-dl login netease --cookie \"MUSIC_U=xxx\""
+                        .into(),
+                ));
+            }
             802 if !prompted => {
                 eprintln!("已扫码,请在 APP 内确认...");
                 prompted = true;
@@ -161,4 +171,32 @@ fn extract_cookies_from_jar(jar: &Jar) -> Result<NeteaseCookies, AuthError> {
         music_u: pick(&all, "MUSIC_U").ok_or(AuthError::MissingCookie("MUSIC_U"))?,
         csrf: pick(&all, "__csrf").unwrap_or_default(),
     })
+}
+
+// 从浏览器复制的 cookie 字符串直接登录(绕过 8821 风控)
+//   接受格式:
+//     "MUSIC_U=xxx"
+//     "MUSIC_U=xxx; __csrf=yyy"
+//     "随便其他=foo; MUSIC_U=xxx; __csrf=yyy; bar=baz"  (混杂也能解)
+pub async fn login_with_cookie(cookie_str: &str) -> Result<NeteaseCookies, AuthError> {
+    let mut music_u = None;
+    let mut csrf = None;
+    for kv in cookie_str.split(';') {
+        if let Some((k, v)) = kv.trim().split_once('=') {
+            match k.trim() {
+                "MUSIC_U" => music_u = Some(v.trim().to_string()),
+                "__csrf" => csrf = Some(v.trim().to_string()),
+                _ => {}
+            }
+        }
+    }
+    let music_u = music_u.ok_or(AuthError::MissingCookie("MUSIC_U"))?;
+
+    let cookies = NeteaseCookies {
+        music_u,
+        csrf: csrf.unwrap_or_default(),
+    };
+    save_cookies(&cookies).await?;
+    println!("网易云 Cookie 已保存 ({} 字段)", if cookies.csrf.is_empty() { "MUSIC_U" } else { "MUSIC_U + __csrf" });
+    Ok(cookies)
 }
